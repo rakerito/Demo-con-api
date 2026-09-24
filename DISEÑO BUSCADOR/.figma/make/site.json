@@ -1,0 +1,10 @@
+{
+  "description": "This web application offers a streamlined search functionality for mobile and desktop users, enhancing accessibility and efficiency in finding information.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
