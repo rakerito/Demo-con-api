@@ -43,7 +43,7 @@ interface SearchApiResponse { internalResults: Product[]; totalInternal: number;
 interface ExternalApiResponse { bestOffer: (ExternalOffer & { reasons?: string[] }) | null; candidateCount: number; }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const CATEGORIES = ["Todos", "Laptops", "Celulares", "Tablets", "Accesorios", "Monitores", "Audio", "Gaming", "Wearables", "Almacenamiento"];
+const CATEGORIES = ["", "Laptops", "Celulares", "Tablets", "Accesorios", "Monitores", "Audio", "Gaming", "Wearables", "Almacenamiento"];
 const SUGGESTIONS = ["laptop gaming", "smartphone", "auriculares bluetooth", "monitor 4k", "teclado mecánico", "SSD NVMe", "smartwatch", "tablet"];
 const SORT_OPTIONS = [
   { value: "relevance", label: "Relevancia" },
@@ -384,7 +384,7 @@ export default function Home() {
                   ))}
                 </div>
               </div>
-              
+
               <div className="qf-section">
                 <span className="qf-title">Marcas</span>
                 <div className="qf-chips">

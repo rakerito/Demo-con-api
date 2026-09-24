@@ -5,7 +5,7 @@ import { ExternalOffer } from "@/types";
 // SerpApi provides Google Shopping results via a clean REST API.
 
 const SERPER_API_KEY = process.env.SERPER_API_KEY || "";
-const SERPAPI_BASE_URL = "https://serpapi.com/search.json";
+const SERPAPI_BASE_URL = "https://serpapi.com/search?engine=google";
 
 interface SerperShoppingItem {
   title: string;
