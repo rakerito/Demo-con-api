@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Product, ExternalOffer } from "@/types";
+import type { SearchSpec } from "@/lib/queryBuilder";
 import {
-  buildShoppingSearchRequest,
+  buildShoppingSpec,
   EMPTY_SHOPPING_ANSWERS,
   getNextShoppingStep,
   getShoppingCompletionReply,
@@ -47,7 +48,7 @@ function formatPrice(n: number): string {
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface ChatMessage { role: "assistant" | "user"; content: string; }
-interface AssistantApiResponse { reply: string; ready: boolean; options: string[]; }
+interface AssistantApiResponse { reply: string; ready: boolean; options: string[]; spec?: SearchSpec; }
 interface ExternalApiResponse {
   offers: ExternalOffer[];
   candidateCount: number;
@@ -227,6 +228,7 @@ export default function Home() {
   const [activeNav, setActiveNav] = useState("Inicio");
   const [messages, setMessages] = useState<ChatMessage[]>(INITIAL_MESSAGES);
   const [shoppingAnswers, setShoppingAnswers] = useState<ShoppingAnswers>(EMPTY_SHOPPING_ANSWERS);
+  const [shoppingSpec, setShoppingSpec] = useState<SearchSpec | null>(null);
   const [messageInput, setMessageInput] = useState("");
   const [assistantBusy, setAssistantBusy] = useState(false);
   const [assistantReady, setAssistantReady] = useState(false);
@@ -278,6 +280,7 @@ export default function Home() {
       setMessages([...nextMessages, { role: "assistant", content: data.reply }]);
       setAssistantReady(data.ready);
       setReplyOptions(data.options);
+      setShoppingSpec(data.ready ? data.spec ?? buildShoppingSpec(nextAnswers) : null);
     } catch {
       const ready = nextStep === "complete";
       setMessages([
@@ -289,6 +292,7 @@ export default function Home() {
       ]);
       setAssistantReady(ready);
       setReplyOptions(ready ? [] : getShoppingOptions(nextStep, nextAnswers));
+      setShoppingSpec(ready ? buildShoppingSpec(nextAnswers) : null);
       setAssistantError("");
     } finally {
       setAssistantBusy(false);
@@ -297,9 +301,8 @@ export default function Home() {
   }
 
   async function searchOffers() {
-    const searchRequest = buildShoppingSearchRequest(shoppingAnswers);
-    const query = searchRequest.query;
-    if (!query || searchingOffers) return;
+    const spec = shoppingSpec || buildShoppingSpec(shoppingAnswers);
+    if (!spec.tipo && !spec.modelo || searchingOffers) return;
 
     setSearchingOffers(true);
     setAssistantError("");
@@ -307,10 +310,11 @@ export default function Home() {
     setAssistantOffers([]);
     setHasSearched(true);
     try {
-      const params = new URLSearchParams({ q: query });
-      if (searchRequest.minPrice !== undefined) params.set("min_price", String(searchRequest.minPrice));
-      if (searchRequest.maxPrice !== undefined) params.set("max_price", String(searchRequest.maxPrice));
-      const response = await fetch(`/api/external?${params.toString()}`);
+      const response = await fetch("/api/external", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ spec }),
+      });
       const data = await response.json() as ExternalApiResponse;
       if (!response.ok) {
         setSearchResultMessage(getSerpApiErrorMessage(data.error, data.upstreamStatus, data.upstreamMessage));
@@ -333,6 +337,7 @@ export default function Home() {
   function resetAssistant() {
     setMessages(INITIAL_MESSAGES);
     setShoppingAnswers(EMPTY_SHOPPING_ANSWERS);
+    setShoppingSpec(null);
     setMessageInput("");
     setAssistantBusy(false);
     setAssistantReady(false);

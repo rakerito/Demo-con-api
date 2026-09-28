@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
+  buildShoppingSpec,
   EMPTY_SHOPPING_ANSWERS,
   getNextShoppingStep,
   getShoppingCompletionReply,
@@ -41,6 +42,7 @@ export async function POST(request: NextRequest) {
       step,
       reply: getShoppingCompletionReply(answers),
       options: [],
+      spec: buildShoppingSpec(answers),
     });
   }
 

@@ -33,15 +33,15 @@ export type SerpApiErrorCode =
   | "UPSTREAM_ERROR"
   | "REQUEST_FAILED";
 
-export class SerpApiError extends Error {
-  constructor(
-    public readonly code: SerpApiErrorCode,
-    public readonly status?: number,
-    public readonly detail?: string
-  ) {
-    super(code);
-    this.name = "SerpApiError";
-  }
+export interface SerpApiSearchError {
+  code: SerpApiErrorCode;
+  status?: number;
+  detail?: string;
+}
+
+export interface SerpApiSearchResult {
+  items: SerpApiShoppingItem[];
+  error?: SerpApiSearchError;
 }
 
 export interface SerpApiPriceFilters {
@@ -52,55 +52,66 @@ export interface SerpApiPriceFilters {
 export async function searchSerpApi(
   query: string,
   priceFilters: SerpApiPriceFilters = {}
-): Promise<SerpApiShoppingItem[]> {
+): Promise<SerpApiSearchResult> {
   if (!SERPAPI_API_KEY) {
-    throw new SerpApiError("API_KEY_MISSING");
+    return { items: [], error: { code: "API_KEY_MISSING" } };
   }
 
-  try {
-    const params = new URLSearchParams({
-      engine: "google_shopping",
-      q: query,
-      gl: "mx",
-      hl: "es",
-      api_key: SERPAPI_API_KEY,
-      num: "10",
-    });
-    if (priceFilters.minPrice !== undefined) {
-      params.set("min_price", String(priceFilters.minPrice));
-    }
-    if (priceFilters.maxPrice !== undefined) {
-      params.set("max_price", String(priceFilters.maxPrice));
-    }
-
-    const response = await axios.get<SerpApiShoppingResponse>(
-      `${SERPAPI_URL}?${params.toString()}`,
-      { timeout: 15000 }
-    );
-
-    if (response.data.error) {
-      const detail = sanitizeSerpApiError(response.data.error);
-      console.error("[SerpApi] API error:", detail);
-      throw new SerpApiError("API_ERROR_RESPONSE", response.status, detail);
-    }
-
-    return response.data.shopping_results || [];
-  } catch (error) {
-    if (error instanceof SerpApiError) throw error;
-
-    const status = axios.isAxiosError(error) ? error.response?.status : undefined;
-    console.error("[SerpApi] Search error:", status ?? (axios.isAxiosError(error) ? error.code : "Unknown error"));
-    const code = status === 401
-      ? "INVALID_API_KEY"
-      : status === 400
-        ? "INVALID_REQUEST"
-        : status === 402 || status === 403 || status === 429
-          ? "ACCOUNT_RESTRICTED"
-          : status !== undefined && status >= 500
-            ? "UPSTREAM_ERROR"
-            : "REQUEST_FAILED";
-    throw new SerpApiError(code, status);
+  const params = new URLSearchParams({
+    engine: "google_shopping",
+    google_domain: "google.com.mx",
+    q: query,
+    gl: "mx",
+    hl: "es",
+    api_key: SERPAPI_API_KEY,
+  });
+  if (priceFilters.minPrice !== undefined) {
+    params.set("min_price", String(priceFilters.minPrice));
   }
+  if (priceFilters.maxPrice !== undefined) {
+    params.set("max_price", String(priceFilters.maxPrice));
+  }
+
+  let lastError: SerpApiSearchError = { code: "REQUEST_FAILED" };
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const response = await axios.get<SerpApiShoppingResponse>(
+        `${SERPAPI_URL}?${params.toString()}`,
+        { timeout: 15000 }
+      );
+
+      if (response.data.error) {
+        lastError = {
+          code: "API_ERROR_RESPONSE",
+          status: response.status,
+          detail: sanitizeSerpApiError(response.data.error),
+        };
+      } else {
+        return { items: response.data.shopping_results || [] };
+      }
+    } catch (error) {
+      const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+      lastError = {
+        code: getErrorCode(status),
+        status,
+        detail: axios.isAxiosError(error) && error.code
+          ? sanitizeSerpApiError(error.code)
+          : undefined,
+      };
+    }
+
+    console.warn(`[SerpApi] Search attempt ${attempt}/2 failed:`, lastError.code, lastError.status);
+  }
+
+  return { items: [], error: lastError };
+}
+
+function getErrorCode(status?: number): SerpApiErrorCode {
+  if (status === 401) return "INVALID_API_KEY";
+  if (status === 400) return "INVALID_REQUEST";
+  if (status === 402 || status === 403 || status === 429) return "ACCOUNT_RESTRICTED";
+  if (status !== undefined && status >= 500) return "UPSTREAM_ERROR";
+  return "REQUEST_FAILED";
 }
 
 function sanitizeSerpApiError(message: string): string {

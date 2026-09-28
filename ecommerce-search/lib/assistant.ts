@@ -1,3 +1,5 @@
+import type { SearchSpec } from "@/lib/queryBuilder";
+
 export type ShoppingStep = "category" | "product" | "budget" | "priority";
 export type ShoppingAnswers = Record<ShoppingStep, string>;
 
@@ -187,6 +189,23 @@ export function buildShoppingSearchRequest(answers: ShoppingAnswers): {
   return {
     query: queryParts.map(value => value.trim()).filter(Boolean).join(" "),
     ...budgetFilter,
+  };
+}
+
+export function buildShoppingSpec(answers: ShoppingAnswers): SearchSpec {
+  const budgetFilter = BUDGET_PRICE_FILTERS[answers.budget];
+  const queryBudget = answers.budget &&
+    answers.budget !== "Sin límite fijo" &&
+    (!budgetFilter || budgetFilter.maxPrice === undefined)
+    ? [answers.budget]
+    : [];
+
+  return {
+    tipo: answers.category,
+    marca: "",
+    modelo: answers.product,
+    specs: [answers.priority, ...queryBudget].filter(Boolean),
+    presupuesto_max: budgetFilter?.maxPrice ?? null,
   };
 }
 
