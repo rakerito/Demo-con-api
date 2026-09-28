@@ -1,19 +1,26 @@
 "use client";
 
-import { useState, useRef, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
 import { Product, ExternalOffer } from "@/types";
+import {
+  buildShoppingSearchRequest,
+  EMPTY_SHOPPING_ANSWERS,
+  getNextShoppingStep,
+  getShoppingCompletionReply,
+  getShoppingOptions,
+  getShoppingQuestion,
+  OTHER_OPTION,
+  ShoppingAnswers,
+} from "@/lib/assistant";
 
 // ─── Asset paths ──────────────────────────────────────────────────────────────
 const A = "/assets/";
 const imgMenu = `${A}f5c89.svg`;
 const imgCart = `${A}d6bf2.svg`;
-const imgSearch = `${A}39f74.svg`;
-const imgSearchBtn = `${A}9f889.svg`;
-const imgSliders = `${A}9edcf.svg`;
 const imgHeart = `${A}753a8.svg`;
 const imgShoppingBag = `${A}211d0.svg`;
 const imgHouse = `${A}3d36c.svg`;
-const imgCatalog = `${A}5cb3a.svg`;
 const imgBagNav = `${A}9b028.svg`;
 const imgUser = `${A}5fa02.svg`;
 const imgShield = `${A}7829a.svg`;
@@ -39,23 +46,38 @@ function formatPrice(n: number): string {
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-interface SearchApiResponse { internalResults: Product[]; totalInternal: number; }
-interface ExternalApiResponse { bestOffer: (ExternalOffer & { reasons?: string[] }) | null; candidateCount: number; }
+interface ChatMessage { role: "assistant" | "user"; content: string; }
+interface AssistantApiResponse { reply: string; ready: boolean; options: string[]; }
+interface ExternalApiResponse {
+  offers: ExternalOffer[];
+  candidateCount: number;
+  rawResultCount?: number;
+  unparsedResultCount?: number;
+  error?: string;
+  upstreamStatus?: number;
+  upstreamMessage?: string;
+}
+
+function getSerpApiErrorMessage(error?: string, status?: number, detail?: string): string {
+  const statusText = status ? ` (HTTP ${status})` : "";
+  if (error === "API_KEY_MISSING") return "Falta configurar la clave de SerpApi en el servidor.";
+  if (error === "INVALID_API_KEY") return `SerpApi rechazó la clave configurada${statusText}. Revísala en el entorno del servidor.`;
+  if (error === "INVALID_REQUEST") return `SerpApi rechazó los parámetros de búsqueda${statusText}.`;
+  if (error === "ACCOUNT_RESTRICTED") return `SerpApi rechazó la solicitud por acceso, plan o cuota${statusText}. Revisa el estado de la cuenta.`;
+  if (error === "API_ERROR_RESPONSE") {
+    return `SerpApi devolvió un error${statusText}: ${detail || "sin detalle adicional"}`;
+  }
+  if (error === "UPSTREAM_ERROR") return `SerpApi tuvo un fallo temporal${statusText}. Inténtalo de nuevo.`;
+  return `No se pudo obtener una respuesta válida de SerpApi${statusText}.`;
+}
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-const CATEGORIES = ["", "Laptops", "Celulares", "Tablets", "Accesorios", "Monitores", "Audio", "Gaming", "Wearables", "Almacenamiento"];
-const SUGGESTIONS = ["laptop gaming", "smartphone", "auriculares bluetooth", "monitor 4k", "teclado mecánico", "SSD NVMe", "smartwatch", "tablet"];
-const SORT_OPTIONS = [
-  { value: "relevance", label: "Relevancia" },
-  { value: "price_asc", label: "Menor precio" },
-  { value: "price_desc", label: "Mayor precio" },
-  { value: "rating", label: "Mejor calificados" },
+const INITIAL_MESSAGES: ChatMessage[] = [
+  {
+    role: "assistant",
+    content: "Hola, soy tu asesor de compra. Primero elige la categoría; después guardaremos el producto, tu presupuesto y lo que más te importa.",
+  },
 ];
-const CAT_MAP: Record<string, string> = {
-  Laptops: "Electrónicos", Celulares: "Smartphones", Tablets: "Tablets",
-  Accesorios: "Periféricos", Monitores: "Monitores", Audio: "Audio",
-  Gaming: "Gaming", Wearables: "Wearables", Almacenamiento: "Almacenamiento",
-};
 
 // Static home products
 const HOME_PRODUCTS = [
@@ -180,7 +202,7 @@ function ModalProductDetail({ product, onClose }: { product: any; onClose: () =>
                   </button>
                 ) : (
                   <div className="dev-raw-box fade-in">
-                    <p className="dev-raw-title">Datos crudos de la API (Tavily/SerpApi):</p>
+                    <p className="dev-raw-title">Datos de búsqueda Google Shopping (SerpApi):</p>
                     <ul>
                       <li><strong>Proveedor original:</strong> {product.raw.source}</li>
                       <li><strong>Precio original:</strong> {formatPrice(product.raw.originalPrice)} <em>(Mostrando un {(((product.price / product.raw.originalPrice) - 1) * 100).toFixed(0)}% de margen en UI)</em></li>
@@ -201,65 +223,127 @@ function ModalProductDetail({ product, onClose }: { product: any; onClose: () =>
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 export default function Home() {
-  const [query, setQuery] = useState("");
-  const [focused, setFocused] = useState(false);
-  const [activeCategory, setActiveCategory] = useState("Todos");
-  const [sortBy, setSortBy] = useState("relevance");
-  const [showSort, setShowSort] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(false);
   const [activeNav, setActiveNav] = useState("Inicio");
-
-  const [internalResults, setInternalResults] = useState<Product[]>([]);
-  const [externalOffer, setExternalOffer] = useState<(ExternalOffer & { reasons?: string[] }) | null>(null);
-  const [loadingInt, setLoadingInt] = useState(false);
-  const [loadingExt, setLoadingExt] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>(INITIAL_MESSAGES);
+  const [shoppingAnswers, setShoppingAnswers] = useState<ShoppingAnswers>(EMPTY_SHOPPING_ANSWERS);
+  const [messageInput, setMessageInput] = useState("");
+  const [assistantBusy, setAssistantBusy] = useState(false);
+  const [assistantReady, setAssistantReady] = useState(false);
+  const [assistantError, setAssistantError] = useState("");
+  const [searchResultMessage, setSearchResultMessage] = useState("");
+  const [replyOptions, setReplyOptions] = useState<string[]>(getShoppingOptions("category", EMPTY_SHOPPING_ANSWERS));
+  const [otherSelected, setOtherSelected] = useState(false);
+  const [assistantOffers, setAssistantOffers] = useState<ExternalOffer[]>([]);
+  const [searchingOffers, setSearchingOffers] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
-
   const [selectedProduct, setSelectedProduct] = useState<any>(null);
+  const transcriptEndRef = useRef<HTMLDivElement>(null);
+  const messageInputRef = useRef<HTMLInputElement>(null);
+  const currentStep = getNextShoppingStep(shoppingAnswers);
+  const userTurnCount = Object.values(shoppingAnswers).filter(Boolean).length;
 
-  const inputRef = useRef<HTMLInputElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const isLoading = loadingInt || loadingExt;
-  const showResults = hasSearched && query.trim().length > 0;
+  useEffect(() => {
+    transcriptEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [messages, assistantBusy]);
 
-  const doSearch = useCallback(async (q: string, cat: string, sort: string) => {
-    const trimmed = q.trim();
-    if (!trimmed) return;
-    if (abortRef.current) abortRef.current.abort();
-    abortRef.current = new AbortController();
-    setHasSearched(true); setLoadingInt(true); setLoadingExt(true);
-    setInternalResults([]); setExternalOffer(null);
+  useEffect(() => {
+    if (otherSelected) messageInputRef.current?.focus();
+  }, [otherSelected]);
 
-    const dbCat = CAT_MAP[cat] || "";
-    const params = new URLSearchParams({ q: trimmed, sort });
-    if (dbCat) params.set("category", dbCat);
+  async function sendAnswer(content: string) {
+    const trimmed = content.trim();
+    if (!trimmed || assistantBusy || currentStep === "complete") return;
 
-    fetch(`/api/search?${params}`, { signal: abortRef.current.signal })
-      .then(r => r.json() as Promise<SearchApiResponse>)
-      .then(d => setInternalResults(d.internalResults))
-      .catch(() => { }).finally(() => setLoadingInt(false));
+    const nextAnswers = { ...shoppingAnswers, [currentStep]: trimmed };
+    const nextStep = getNextShoppingStep(nextAnswers);
+    const nextMessages = [...messages, { role: "user" as const, content: trimmed }];
+    setShoppingAnswers(nextAnswers);
+    setMessages(nextMessages);
+    setMessageInput("");
+    setReplyOptions([]);
+    setOtherSelected(false);
+    setAssistantBusy(true);
+    setAssistantError("");
 
-    fetch(`/api/external?q=${encodeURIComponent(trimmed)}`, { signal: abortRef.current.signal })
-      .then(r => r.json() as Promise<ExternalApiResponse>)
-      .then(d => { setExternalOffer(d.bestOffer); })
-      .catch(() => { }).finally(() => setLoadingExt(false));
-  }, []);
+    try {
+      const response = await fetch("/api/assistant", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ answers: nextAnswers }),
+      });
+      if (!response.ok) throw new Error("Assistant request failed");
 
-  const handleSearch = () => doSearch(query, activeCategory, sortBy);
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === "Enter") handleSearch();
-    if (e.key === "Escape") { setQuery(""); setHasSearched(false); }
-  };
-  const handleCategory = (cat: string) => {
-    setActiveCategory(cat);
-    if (hasSearched) doSearch(query, cat, sortBy);
-  };
-  const handleSort = (s: string) => { setSortBy(s); setShowSort(false); if (hasSearched) doSearch(query, activeCategory, s); };
+      const data = await response.json() as AssistantApiResponse;
+      setMessages([...nextMessages, { role: "assistant", content: data.reply }]);
+      setAssistantReady(data.ready);
+      setReplyOptions(data.options);
+    } catch {
+      const ready = nextStep === "complete";
+      setMessages([
+        ...nextMessages,
+        {
+          role: "assistant",
+          content: ready ? getShoppingCompletionReply(nextAnswers) : getShoppingQuestion(nextStep, nextAnswers),
+        },
+      ]);
+      setAssistantReady(ready);
+      setReplyOptions(ready ? [] : getShoppingOptions(nextStep, nextAnswers));
+      setAssistantError("");
+    } finally {
+      setAssistantBusy(false);
+      messageInputRef.current?.focus();
+    }
+  }
 
-  // Combine results
-  const allResults = [...internalResults];
-  if (externalOffer && !loadingExt) {
-    // Insert external offer into the main grid
-    allResults.unshift(externalOffer as any);
+  async function searchOffers() {
+    const searchRequest = buildShoppingSearchRequest(shoppingAnswers);
+    const query = searchRequest.query;
+    if (!query || searchingOffers) return;
+
+    setSearchingOffers(true);
+    setAssistantError("");
+    setSearchResultMessage("");
+    setAssistantOffers([]);
+    setHasSearched(true);
+    try {
+      const params = new URLSearchParams({ q: query });
+      if (searchRequest.minPrice !== undefined) params.set("min_price", String(searchRequest.minPrice));
+      if (searchRequest.maxPrice !== undefined) params.set("max_price", String(searchRequest.maxPrice));
+      const response = await fetch(`/api/external?${params.toString()}`);
+      const data = await response.json() as ExternalApiResponse;
+      if (!response.ok) {
+        setSearchResultMessage(getSerpApiErrorMessage(data.error, data.upstreamStatus, data.upstreamMessage));
+        return;
+      }
+
+      setAssistantOffers(data.offers);
+      if (data.offers.length === 0) {
+        setSearchResultMessage(data.rawResultCount === 0
+          ? "Google Shopping no devolvió resultados para esta búsqueda. No hay filtros de tiendas configurados; prueba con el modelo o tipo de producto exacto."
+          : `Google Shopping devolvió ${data.rawResultCount} resultados, pero ${data.unparsedResultCount ?? data.rawResultCount} no tenían un precio válido para comparar.`);
+      }
+    } catch {
+      setSearchResultMessage("No pudimos conectar con SerpApi. Revisa la conexión e inténtalo de nuevo.");
+    } finally {
+      setSearchingOffers(false);
+    }
+  }
+
+  function resetAssistant() {
+    setMessages(INITIAL_MESSAGES);
+    setShoppingAnswers(EMPTY_SHOPPING_ANSWERS);
+    setMessageInput("");
+    setAssistantBusy(false);
+    setAssistantReady(false);
+    setAssistantError("");
+    setSearchResultMessage("");
+    setReplyOptions(getShoppingOptions("category", EMPTY_SHOPPING_ANSWERS));
+    setOtherSelected(false);
+    setAssistantOffers([]);
+    setSearchingOffers(false);
+    setHasSearched(false);
+    setAssistantOpen(true);
   }
 
   return (
@@ -273,58 +357,25 @@ export default function Home() {
             <button className="icon-btn" aria-label="Menú">
               <img alt="" src={imgMenu} style={{ width: 24, height: 24, filter: "brightness(0) invert(1)" }} />
             </button>
-            <a href="/" className="logo-link">
+            <Link href="/" className="logo-link" onClick={() => { setAssistantOpen(false); setActiveNav("Inicio"); }}>
               <span className="logo-mx">MX</span>
               <span className="logo-comp">comp</span>
-            </a>
+            </Link>
           </div>
 
-          {/* Desktop search (visible md+) */}
-          <div className={`search-box-desktop ${focused ? "search-focused" : ""}`}>
-            <img alt="" src={imgSearch} style={{ width: 18, height: 18, opacity: 0.5 }} />
-            <input
-              ref={inputRef}
-              id="search-input"
-              type="text"
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              onFocus={() => setFocused(true)}
-              onBlur={() => setFocused(false)}
-              onKeyDown={handleKeyDown}
-              placeholder="¿Qué estás buscando?"
-              className="search-input-desktop"
-            />
-            {query && (
-              <button onClick={() => { setQuery(""); setHasSearched(false); }} className="clear-btn" aria-label="Limpiar">×</button>
-            )}
-          </div>
+          <button
+            className="assistant-entry"
+            onClick={() => { setAssistantOpen(true); setActiveNav("Asesor"); }}
+          >
+            <span className="assistant-entry-icon"><img alt="" src={imgCpu} /></span>
+            <span className="assistant-entry-copy">
+              <strong>Asesor de compra</strong>
+              <small>Cuéntanos qué necesitas</small>
+            </span>
+            <span className="assistant-entry-arrow" aria-hidden="true">&#8594;</span>
+          </button>
 
-          {/* Right actions */}
           <div className="header-actions">
-            <div className="sort-wrap">
-              <button onClick={() => setShowSort(v => !v)} className="icon-btn" aria-label="Ordenar">
-                <img alt="" src={imgSliders} style={{ width: 22, height: 22, filter: "brightness(0) invert(1)" }} />
-              </button>
-              {showSort && (
-                <div className="sort-dropdown">
-                  {SORT_OPTIONS.map(o => (
-                    <button key={o.value} onClick={() => handleSort(o.value)}
-                      className={`sort-item ${sortBy === o.value ? "sort-item-active" : ""}`}>
-                      {o.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-            <button
-              id="search-btn-desktop"
-              onClick={handleSearch}
-              disabled={isLoading || !query.trim()}
-              className="btn-search-header"
-            >
-              {isLoading ? <span className="spinner" /> : <img alt="" src={imgSearchBtn} style={{ width: 18, height: 18, filter: "brightness(0) invert(1)" }} />}
-              <span>Buscar</span>
-            </button>
             <button className="icon-btn cart-btn" aria-label="Carrito">
               <img alt="" src={imgCart} style={{ width: 24, height: 24, filter: "brightness(0) invert(1)" }} />
               <span className="cart-badge">3</span>
@@ -332,183 +383,170 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Mobile search bar */}
-        <div className="mobile-search-row">
-          <div className={`search-box-mobile ${focused ? "search-focused" : ""}`}>
-            <img alt="" src={imgSearch} style={{ width: 16, height: 16, opacity: 0.5, flexShrink: 0 }} />
-            <input
-              type="text"
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              onFocus={() => setFocused(true)}
-              onBlur={() => setFocused(false)}
-              onKeyDown={handleKeyDown}
-              placeholder="¿Qué estás buscando?"
-              className="search-input-mobile"
-            />
-            {query && <button onClick={() => { setQuery(""); setHasSearched(false); }} className="clear-btn">×</button>}
-          </div>
-          <button onClick={handleSearch} disabled={isLoading || !query.trim()} className="btn-icon-teal">
-            {isLoading ? <span className="spinner" /> : <img alt="" src={imgSearchBtn} style={{ width: 18, height: 18, filter: "brightness(0) invert(1)" }} />}
-          </button>
-          <div className="sort-wrap">
-            <button onClick={() => setShowSort(v => !v)} className="btn-icon-teal">
-              <img alt="" src={imgSliders} style={{ width: 18, height: 18, filter: "brightness(0) invert(1)" }} />
-            </button>
-            {showSort && (
-              <div className="sort-dropdown sort-dropdown-mobile">
-                {SORT_OPTIONS.map(o => (
-                  <button key={o.value} onClick={() => handleSort(o.value)}
-                    className={`sort-item ${sortBy === o.value ? "sort-item-active" : ""}`}>
-                    {o.label}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-        {/* ─── QUICK FILTERS OVERLAY ────────────────────────────────────────── */}
-        {focused && (
-          <div className="quick-filters-overlay fade-in">
-            <div className="qf-container">
-              <div className="qf-section">
-                <span className="qf-title">¿Qué dispositivo buscas?</span>
-                <div className="qf-chips">
-                  {["Celular", "Laptop", "Tablet", "Smartwatch", "Audífonos"].map(f => (
-                    <button key={f} className="qf-chip" onMouseDown={(e) => {
-                      e.preventDefault();
-                      const newQ = query ? `${query} ${f}` : f;
-                      setQuery(newQ);
-                      inputRef.current?.focus();
-                    }}>{f}</button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="qf-section">
-                <span className="qf-title">Marcas</span>
-                <div className="qf-chips">
-                  {["Apple", "Samsung", "Motorola", "Xiaomi", "Asus", "HP"].map(f => (
-                    <button key={f} className="qf-chip" onMouseDown={(e) => {
-                      e.preventDefault();
-                      const newQ = query ? `${query} ${f}` : f;
-                      setQuery(newQ);
-                      inputRef.current?.focus();
-                    }}>{f}</button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="qf-section">
-                <span className="qf-title">Características</span>
-                <div className="qf-chips">
-                  {["128GB", "256GB", "512GB", "8GB RAM", "16GB RAM", "OLED"].map(f => (
-                    <button key={f} className="qf-chip" onMouseDown={(e) => {
-                      e.preventDefault();
-                      const newQ = query ? `${query} ${f}` : f;
-                      setQuery(newQ);
-                      inputRef.current?.focus();
-                    }}>{f}</button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
       </header>
-
-      {/* ════ CATEGORIES BAR ════════════════════════════════════════════════ */}
-      <nav className="cat-bar" aria-label="Categorías">
-        <div className="cat-inner">
-          {CATEGORIES.map(cat => (
-            <button
-              key={cat}
-              id={`cat-${cat.toLowerCase().replace(/\s+/g, "-")}`}
-              onClick={() => handleCategory(cat)}
-              className={`cat-chip ${activeCategory === cat ? "cat-chip-active" : ""}`}
-            >
-              {cat}
-            </button>
-          ))}
-        </div>
-      </nav>
 
       {/* ════ MAIN CONTENT ══════════════════════════════════════════════════ */}
       <main className="main-content">
-
-        {/* ── Suggestions strip ─────────────────────────────────────────── */}
-        {!showResults && (
-          <div className="suggestions-row">
-            <span className="suggestions-label">Búsquedas populares:</span>
-            {SUGGESTIONS.map(s => (
-              <button key={s} id={`sug-${s.replace(/\s+/g, "-")}`}
-                onClick={() => { setQuery(s); doSearch(s, activeCategory, sortBy); }}
-                className="sug-chip">
-                {s}
+        {assistantOpen ? (
+          <section className="assistant-workspace" aria-label="Asesor de compra">
+            <div className="assistant-heading">
+              <button className="assistant-back" onClick={() => { setAssistantOpen(false); setActiveNav("Inicio"); }}>
+                <span aria-hidden="true">&#8592;</span> Tienda
               </button>
-            ))}
-          </div>
-        )}
-
-        {showResults ? (
-          /* ══ RESULTS VIEW ═══════════════════════════════════════════════ */
-          <div className="results-wrapper">
-
-            {/* Stats */}
-            {!loadingInt && (
-              <div className="results-stats">
-                <p className="results-title">Resultados para &ldquo;<em>{query}</em>&rdquo;</p>
-                <span className="results-count">{allResults.length} producto{allResults.length !== 1 ? "s" : ""}</span>
+              <div className="assistant-heading-copy">
+                <span className="assistant-eyebrow">ASESOR DE COMPRA · MXCOMP</span>
+                <h1>Vamos a encontrarlo contigo.</h1>
+                <p>Unas preguntas, tus prioridades y después opciones reales de Google Shopping.</p>
               </div>
-            )}
+              <button className="assistant-reset" onClick={resetAssistant} title="Empezar de nuevo" aria-label="Empezar de nuevo">
+                <span aria-hidden="true">&#8635;</span>
+              </button>
+            </div>
 
-            {/* ── Internal & External catalog ───────────────────────────── */}
-            <section>
-              {loadingInt ? (
-                <div className="products-grid">
-                  {[1, 2, 3, 4, 5, 6].map(i => <div key={i} className="skeleton" style={{ height: 300 }} />)}
+            <div className="assistant-progress" aria-label={`Paso ${Math.min(userTurnCount + 1, 4)} de 4`}>
+              {["Categoría", "Producto", "Presupuesto", "Prioridad"].map((step, index) => (
+                <div className={`assistant-progress-step ${index <= Math.min(userTurnCount, 3) ? "is-active" : ""}`} key={step}>
+                  <span>{index + 1}</span>{step}
                 </div>
-              ) : allResults.length > 0 ? (
-                <div className="products-grid">
-                  {allResults.map((p, i) => (
-                    <ProductCard
-                      key={p.id || i}
-                      product={p}
-                      idx={i}
-                      onClick={() => setSelectedProduct(p)}
-                    />
+              ))}
+            </div>
+
+            <div className="assistant-layout">
+              <div className="assistant-conversation">
+                <div className="assistant-chat-topline">
+                  <span className="assistant-online-dot" />
+                  <span>Asesor conectado</span>
+                  <span className="assistant-powered">Perfil guiado</span>
+                </div>
+                <div className="assistant-transcript" role="log" aria-live="polite" aria-label="Conversación">
+                  {messages.map((message, index) => (
+                    <div className={`chat-message chat-${message.role}`} key={`${message.role}-${index}`}>
+                      {message.role === "assistant" && <span className="chat-avatar" aria-hidden="true">M</span>}
+                      <p>{message.content}</p>
+                    </div>
                   ))}
+                  {assistantBusy && (
+                    <div className="chat-message chat-assistant">
+                      <span className="chat-avatar" aria-hidden="true">M</span>
+                      <p className="chat-typing"><i /><i /><i /><span>Preparando la siguiente pregunta</span></p>
+                    </div>
+                  )}
+                  <div ref={transcriptEndRef} />
                 </div>
-              ) : (
-                <div className="empty-state">
-                  <img alt="" src={imgSearch} style={{ width: 48, height: 48, opacity: 0.25 }} />
-                  <p className="empty-title">Sin resultados para &ldquo;{query}&rdquo;</p>
-                  <p className="empty-sub">Intenta con otro término o cambia los filtros</p>
-                </div>
-              )}
-            </section>
-          </div>
 
+                {replyOptions.length > 0 && !assistantBusy && !assistantReady && (
+                  <div className={`assistant-suggestions ${currentStep === "category" ? "assistant-category-options" : ""}`} aria-label="Opciones de respuesta">
+                    {replyOptions.map((option, index) => (
+                      <button
+                        className={option === OTHER_OPTION ? "assistant-option-other" : ""}
+                        key={`${option}-${index}`}
+                        onClick={() => option === OTHER_OPTION ? setOtherSelected(true) : void sendAnswer(option)}
+                      >
+                        {option}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {assistantError && <p className="assistant-error" role="alert">{assistantError}</p>}
+
+                {otherSelected && replyOptions.length > 0 && (
+                  <button className="assistant-options-back" onClick={() => setOtherSelected(false)}>Volver a las opciones</button>
+                )}
+
+                {assistantReady && !hasSearched && (
+                  <div className="assistant-ready-panel">
+                    <div>
+                      <strong>Ya tenemos una buena idea de lo que buscas.</strong>
+                      <span>La búsqueda incluirá tus respuestas y preferencias.</span>
+                    </div>
+                    <button onClick={() => void searchOffers()} disabled={searchingOffers}>
+                      {searchingOffers ? <span className="spinner" /> : <img src={imgCpu} alt="" />}
+                      Buscar opciones
+                    </button>
+                  </div>
+                )}
+
+                {!assistantReady && (otherSelected || replyOptions.length === 0) && (
+                  <>
+                    <form className="assistant-composer" onSubmit={event => { event.preventDefault(); void sendAnswer(messageInput); }}>
+                      <input
+                        ref={messageInputRef}
+                        value={messageInput}
+                        onChange={event => setMessageInput(event.target.value)}
+                        placeholder="Escribe tu respuesta..."
+                        aria-label="Tu respuesta"
+                        maxLength={300}
+                        disabled={assistantBusy}
+                      />
+                      <button type="submit" disabled={!messageInput.trim() || assistantBusy} aria-label="Enviar respuesta">
+                        <span aria-hidden="true">&#8593;</span>
+                      </button>
+                    </form>
+                    <p className="assistant-privacy-note">Tus respuestas se enviarán directamente en la búsqueda de productos.</p>
+                  </>
+                )}
+              </div>
+
+              <aside className="assistant-aside">
+                <div className="assistant-aside-mark" aria-hidden="true"><img src={imgCpu} alt="" /></div>
+                <h2>Una búsqueda a tu medida</h2>
+                <p>Cada respuesta, incluida la que escribas en “Otro”, se conserva para buscar productos en Google Shopping.</p>
+                <div className="assistant-aside-flow">
+                  <span><i>01</i> Elegimos una categoría</span>
+                  <span><i>02</i> Guardamos tus respuestas</span>
+                  <span><i>03</i> SerpApi busca opciones</span>
+                </div>
+              </aside>
+            </div>
+
+            {hasSearched && (
+              <section className="assistant-results" aria-live="polite">
+                <div className="assistant-results-heading">
+                  <div>
+                    <span className="assistant-eyebrow">RESULTADOS DE GOOGLE SHOPPING</span>
+                    <h2>{searchingOffers ? "Buscando opciones para ti" : "Opciones que encontramos"}</h2>
+                  </div>
+                  <span>{assistantOffers.length} ofertas</span>
+                </div>
+                {searchingOffers ? (
+                  <div className="products-grid">
+                    {[1, 2, 3, 4].map(index => <div key={index} className="skeleton" style={{ height: 300 }} />)}
+                  </div>
+                ) : assistantOffers.length ? (
+                  <div className="products-grid">
+                    {assistantOffers.map((offer, index) => (
+                      <ProductCard key={offer.id || index} product={offer} idx={index} onClick={() => setSelectedProduct(offer)} />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="assistant-no-results">
+                    <p>{searchResultMessage || "No encontramos ofertas con esos criterios."}</p>
+                    <button onClick={() => void searchOffers()} disabled={searchingOffers}>Reintentar búsqueda</button>
+                    <button onClick={resetAssistant}>Ajustar lo que busco</button>
+                  </div>
+                )}
+              </section>
+            )}
+          </section>
         ) : (
-          /* ══ HOME VIEW ══════════════════════════════════════════════════ */
           <div className="home-wrapper">
-
-            {/* Hero banner */}
             <div className="hero-banner">
               <div className="hero-text">
-                <span className="hero-badge">OFERTA DEL MES</span>
-                <h1 className="hero-title">Consigue las mejores ofertas</h1>
-                <p className="hero-sub">Hasta 40% de descuento en productos seleccionados.</p>
-                <button className="btn-hero">Ver ofertas</button>
+                <span className="hero-badge">MXCOMP · ASESOR PERSONAL</span>
+                <h1 className="hero-title">Encuentra justo lo que necesitas.</h1>
+                <p className="hero-sub">Cuéntanos qué tienes en mente. Te ayudamos a definirlo y comparamos opciones reales.</p>
+                <button className="btn-hero" onClick={() => { setAssistantOpen(true); setActiveNav("Asesor"); }}>
+                  <img src={imgCpu} alt="" /> Hablar con un asesor <span aria-hidden="true">&#8594;</span>
+                </button>
               </div>
               <div className="hero-decoration" aria-hidden="true">
-                <span className="hero-deco-icon">🛍️</span>
+                <span className="hero-deco-icon">✦</span>
               </div>
             </div>
 
-            {/* Featured brands */}
             <div className="brands-section">
-              <h2 className="section-title">Marcas Destacadas</h2>
+              <h2 className="section-title">Marcas destacadas</h2>
               <div className="brands-row">
                 {[imgShield, imgCpu, imgCircleX, imgCircleX, imgCircleX].map((icon, i) => (
                   <div key={i} className="brand-card">
@@ -518,19 +556,18 @@ export default function Home() {
               </div>
             </div>
 
-            {/* Products */}
             <div className="new-products-section">
               <div className="section-header-row">
-                <h2 className="section-title" style={{ marginBottom: 0 }}>Productos Nuevos</h2>
-                <button className="btn-see-all">Ver todo →</button>
+                <h2 className="section-title" style={{ marginBottom: 0 }}>Productos nuevos</h2>
+                <button className="btn-see-all" onClick={() => { setAssistantOpen(true); setActiveNav("Asesor"); }}>Pedir recomendación <span aria-hidden="true">&#8594;</span></button>
               </div>
               <div className="products-grid">
-                {HOME_PRODUCTS.map((p, i) => (
+                {HOME_PRODUCTS.map((product, index) => (
                   <ProductCard
-                    key={p.id}
-                    product={p as unknown as Product}
-                    idx={i}
-                    onClick={() => setSelectedProduct(p)}
+                    key={product.id}
+                    product={product as unknown as Product}
+                    idx={index}
+                    onClick={() => setSelectedProduct(product)}
                   />
                 ))}
               </div>
@@ -543,7 +580,7 @@ export default function Home() {
       <nav className="bottom-nav" aria-label="Navegación principal">
         {[
           { icon: imgHouse, label: "Inicio" },
-          { icon: imgCatalog, label: "Catálogo" },
+          { icon: imgCpu, label: "Asesor" },
           { icon: imgBagNav, label: "Carrito" },
           { icon: imgUser, label: "Perfil" },
         ].map(({ icon, label }) => {
@@ -552,7 +589,11 @@ export default function Home() {
             <button
               key={label}
               id={`nav-${label.toLowerCase()}`}
-              onClick={() => setActiveNav(label)}
+              onClick={() => {
+                setActiveNav(label);
+                if (label === "Inicio") setAssistantOpen(false);
+                if (label === "Asesor") setAssistantOpen(true);
+              }}
               className={`bottom-nav-item ${active ? "bottom-nav-active" : ""}`}
             >
               <img
@@ -572,7 +613,7 @@ export default function Home() {
       {/* ════ FOOTER (desktop only) ═════════════════════════════════════════ */}
       <footer className="app-footer">
         MXcomp © {new Date().getFullYear()} &nbsp;·&nbsp; Demo E-commerce &nbsp;·&nbsp;
-        Impulsado por <span style={{ color: "#2aabb3" }}>Tavily</span> &amp; <span style={{ color: "#10b981" }}>SerpApi</span>
+        Búsqueda de productos con <span style={{ color: "#10b981" }}>SerpApi</span>
       </footer>
 
       {/* ════ MODAL ═════════════════════════════════════════════════════════ */}

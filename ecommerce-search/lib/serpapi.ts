@@ -21,12 +21,40 @@ interface SerpApiShoppingItem {
 
 interface SerpApiShoppingResponse {
   shopping_results?: SerpApiShoppingItem[];
+  error?: string;
 }
 
-export async function searchSerpApi(query: string): Promise<SerpApiShoppingItem[]> {
+export type SerpApiErrorCode =
+  | "API_KEY_MISSING"
+  | "INVALID_API_KEY"
+  | "INVALID_REQUEST"
+  | "ACCOUNT_RESTRICTED"
+  | "API_ERROR_RESPONSE"
+  | "UPSTREAM_ERROR"
+  | "REQUEST_FAILED";
+
+export class SerpApiError extends Error {
+  constructor(
+    public readonly code: SerpApiErrorCode,
+    public readonly status?: number,
+    public readonly detail?: string
+  ) {
+    super(code);
+    this.name = "SerpApiError";
+  }
+}
+
+export interface SerpApiPriceFilters {
+  minPrice?: number;
+  maxPrice?: number;
+}
+
+export async function searchSerpApi(
+  query: string,
+  priceFilters: SerpApiPriceFilters = {}
+): Promise<SerpApiShoppingItem[]> {
   if (!SERPAPI_API_KEY) {
-    console.warn("[SerpApi] API key not configured — skipping.");
-    return [];
+    throw new SerpApiError("API_KEY_MISSING");
   }
 
   try {
@@ -38,20 +66,48 @@ export async function searchSerpApi(query: string): Promise<SerpApiShoppingItem[
       api_key: SERPAPI_API_KEY,
       num: "10",
     });
+    if (priceFilters.minPrice !== undefined) {
+      params.set("min_price", String(priceFilters.minPrice));
+    }
+    if (priceFilters.maxPrice !== undefined) {
+      params.set("max_price", String(priceFilters.maxPrice));
+    }
 
     const response = await axios.get<SerpApiShoppingResponse>(
       `${SERPAPI_URL}?${params.toString()}`,
       { timeout: 15000 }
     );
 
+    if (response.data.error) {
+      const detail = sanitizeSerpApiError(response.data.error);
+      console.error("[SerpApi] API error:", detail);
+      throw new SerpApiError("API_ERROR_RESPONSE", response.status, detail);
+    }
+
     return response.data.shopping_results || [];
   } catch (error) {
-    const errorCode = axios.isAxiosError(error)
-      ? error.response?.status ?? error.code
-      : "Unknown error";
-    console.error("[SerpApi] Search error:", errorCode);
-    return [];
+    if (error instanceof SerpApiError) throw error;
+
+    const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+    console.error("[SerpApi] Search error:", status ?? (axios.isAxiosError(error) ? error.code : "Unknown error"));
+    const code = status === 401
+      ? "INVALID_API_KEY"
+      : status === 400
+        ? "INVALID_REQUEST"
+        : status === 402 || status === 403 || status === 429
+          ? "ACCOUNT_RESTRICTED"
+          : status !== undefined && status >= 500
+            ? "UPSTREAM_ERROR"
+            : "REQUEST_FAILED";
+    throw new SerpApiError(code, status);
   }
+}
+
+function sanitizeSerpApiError(message: string): string {
+  return message
+    .replace(/api_key=[^&\s]+/gi, "api_key=[redacted]")
+    .replace(/\b[a-f0-9]{48,}\b/gi, "[redacted]")
+    .slice(0, 300);
 }
 
 export function parseSerpApiResult(item: SerpApiShoppingItem): ExternalOffer | null {
@@ -62,7 +118,7 @@ export function parseSerpApiResult(item: SerpApiShoppingItem): ExternalOffer | n
     price = parseFloat(priceMatch);
   }
 
-  if (!price || price < 10 || price > 500000) return null;
+  if (!Number.isFinite(price) || price <= 0) return null;
 
   const deliveryText = (item.delivery || "").toLowerCase();
   let deliveryDays = 5;

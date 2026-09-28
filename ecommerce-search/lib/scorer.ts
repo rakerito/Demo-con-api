@@ -22,32 +22,14 @@ function normalise(value: number, min: number, max: number, invert = false): num
 /**
  * Scores a pool of external offers and returns them sorted best → worst.
  * Lower score = better deal. Returns null if pool is empty.
- * Uses the query to detect and filter out cheap accessories when searching for main devices.
+ * Keeps all valid catalog prices and sorts offers by the comparison score.
  */
-export function rankOffers(offers: ExternalOffer[], query: string = ""): ExternalOffer[] {
+export function rankOffers(offers: ExternalOffer[]): ExternalOffer[] {
   if (offers.length === 0) return [];
 
   // Remove out-of-stock items unless they are the only option
   const available = offers.filter((o) => o.availability !== "out_of_stock");
-  let pool = available.length > 0 ? available : offers;
-
-  // ─── Filter Accessories ──────────────────────────────────────────────────
-  // If the user didn't explicitly search for an accessory, filter out outliers (like $300 cases in a pool of $15,000 phones)
-  const isLookingForAccessory = /funda|case|mica|cable|cargador|protector|correa/i.test(query);
-  
-  if (!isLookingForAccessory && pool.length > 2) {
-    const sortedPrices = [...pool].map(o => o.price).sort((a, b) => a - b);
-    const medianPrice = sortedPrices[Math.floor(sortedPrices.length / 2)];
-    
-    // Filter out items that are less than 30% of the median price
-    const threshold = medianPrice * 0.3;
-    const filteredPool = pool.filter(o => o.price >= threshold);
-    
-    // Only apply the filter if we still have results left
-    if (filteredPool.length > 0) {
-      pool = filteredPool;
-    }
-  }
+  const pool = available.length > 0 ? available : offers;
 
   const prices = pool.map((o) => o.price);
   const deliveries = pool.map((o) => o.deliveryDays);

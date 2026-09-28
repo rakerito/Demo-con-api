@@ -2,9 +2,9 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "MXcomp – Buscador Inteligente",
+  title: "MXcomp – Asesor de compra",
   description:
-    "Encuentra el mejor precio en electrónica y tecnología. Comparamos cientos de proveedores para darte la oferta perfecta.",
+    "Cuéntanos qué necesitas y encuentra opciones de tecnología ajustadas a tus prioridades.",
   keywords: "tienda online, electrónica, tecnología, mejores precios, comprar",
 };
 
