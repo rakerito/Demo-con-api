@@ -1,7 +1,7 @@
 import { ExternalOffer } from "@/types";
 
 // ─── Composite Scorer ─────────────────────────────────────────────────────────
-// Selects the single best offer from a combined pool of Tavily + Serper results.
+// Selects the single best offer from a combined pool of Tavily + SerpApi results.
 
 const WEIGHTS = {
   price: 0.45,      // Biggest factor — lowest price wins

@@ -180,7 +180,7 @@ function ModalProductDetail({ product, onClose }: { product: any; onClose: () =>
                   </button>
                 ) : (
                   <div className="dev-raw-box fade-in">
-                    <p className="dev-raw-title">Datos crudos de la API (Tavily/Serper):</p>
+                    <p className="dev-raw-title">Datos crudos de la API (Tavily/SerpApi):</p>
                     <ul>
                       <li><strong>Proveedor original:</strong> {product.raw.source}</li>
                       <li><strong>Precio original:</strong> {formatPrice(product.raw.originalPrice)} <em>(Mostrando un {(((product.price / product.raw.originalPrice) - 1) * 100).toFixed(0)}% de margen en UI)</em></li>
@@ -572,7 +572,7 @@ export default function Home() {
       {/* ════ FOOTER (desktop only) ═════════════════════════════════════════ */}
       <footer className="app-footer">
         MXcomp © {new Date().getFullYear()} &nbsp;·&nbsp; Demo E-commerce &nbsp;·&nbsp;
-        Impulsado por <span style={{ color: "#2aabb3" }}>Tavily</span> &amp; <span style={{ color: "#10b981" }}>Serper.dev</span>
+        Impulsado por <span style={{ color: "#2aabb3" }}>Tavily</span> &amp; <span style={{ color: "#10b981" }}>SerpApi</span>
       </footer>
 
       {/* ════ MODAL ═════════════════════════════════════════════════════════ */}

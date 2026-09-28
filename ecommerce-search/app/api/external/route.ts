@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { searchTavily, parseTavilyResult } from "@/lib/tavily";
-import { searchSerper, parseSerperResult } from "@/lib/serper";
+import { searchSerpApi, parseSerpApiResult } from "@/lib/serpapi";
 import { rankOffers, explainBestOffer } from "@/lib/scorer";
 import { ExternalOffer } from "@/types";
 
 // ─── GET /api/external?q=... ──────────────────────────────────────────────────
-// Queries Tavily + Serper in parallel, combines results, scores them,
+// Queries Tavily + SerpApi in parallel, combines results, scores them,
 // and returns ONLY the best offer — with all retailer references removed.
 
 export async function GET(request: NextRequest) {
@@ -18,9 +18,9 @@ export async function GET(request: NextRequest) {
 
   try {
     // ── Parallel API calls ────────────────────────────────────────────────────
-    const [tavilyResults, serperResults] = await Promise.allSettled([
+    const [tavilyResults, serpApiResults] = await Promise.allSettled([
       searchTavily(query),
-      searchSerper(query),
+      searchSerpApi(query),
     ]);
 
     const allOffers: ExternalOffer[] = [];
@@ -33,10 +33,10 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // ── Process Serper ────────────────────────────────────────────────────────
-    if (serperResults.status === "fulfilled") {
-      for (const item of serperResults.value) {
-        const offer = parseSerperResult(item);
+    // ── Process SerpApi ───────────────────────────────────────────────────────
+    if (serpApiResults.status === "fulfilled") {
+      for (const item of serpApiResults.value) {
+        const offer = parseSerpApiResult(item);
         if (offer) allOffers.push(offer);
       }
     }

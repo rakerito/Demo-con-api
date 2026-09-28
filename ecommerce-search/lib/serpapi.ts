@@ -1,34 +1,30 @@
 import axios from "axios";
 import { ExternalOffer } from "@/types";
 
-// ─── SerpApi Google Shopping API Client ─────────────────────────────────────────
-// SerpApi provides Google Shopping results via a clean REST API.
+// SerpApi Google Shopping API client.
+const SERPAPI_API_KEY = process.env.SERPAPI_API_KEY || "";
+const SERPAPI_URL = "https://serpapi.com/search";
 
-const SERPER_API_KEY = process.env.SERPER_API_KEY || "";
-const SERPAPI_BASE_URL = "https://serpapi.com/search?engine=google";
-
-interface SerperShoppingItem {
+interface SerpApiShoppingItem {
   title: string;
   source: string;
-  link: string;
-  price?: string;       // e.g. "$1,299.00"
+  product_link?: string;
+  link?: string;
+  price?: string;
   extracted_price?: number;
-  delivery?: string;   // e.g. "Free shipping"
+  delivery?: string;
   rating?: number;
   reviews?: number;
   thumbnail?: string;
   position: number;
 }
 
-interface SerperShoppingResponse {
-  shopping_results?: SerperShoppingItem[];
+interface SerpApiShoppingResponse {
+  shopping_results?: SerpApiShoppingItem[];
 }
 
-/**
- * Queries SerpApi Google Shopping for product listings.
- */
-export async function searchSerper(query: string): Promise<SerperShoppingItem[]> {
-  if (!SERPER_API_KEY) {
+export async function searchSerpApi(query: string): Promise<SerpApiShoppingItem[]> {
+  if (!SERPAPI_API_KEY) {
     console.warn("[SerpApi] API key not configured — skipping.");
     return [];
   }
@@ -39,38 +35,35 @@ export async function searchSerper(query: string): Promise<SerperShoppingItem[]>
       q: query,
       gl: "mx",
       hl: "es",
-      api_key: SERPER_API_KEY,
-      num: "10"
+      api_key: SERPAPI_API_KEY,
+      num: "10",
     });
 
-    const response = await axios.get<SerperShoppingResponse>(
-      `${SERPAPI_BASE_URL}?${params.toString()}`,
+    const response = await axios.get<SerpApiShoppingResponse>(
+      `${SERPAPI_URL}?${params.toString()}`,
       { timeout: 15000 }
     );
 
     return response.data.shopping_results || [];
   } catch (error) {
-    console.error("[SerpApi] Search error:", error);
+    const errorCode = axios.isAxiosError(error)
+      ? error.response?.status ?? error.code
+      : "Unknown error";
+    console.error("[SerpApi] Search error:", errorCode);
     return [];
   }
 }
 
-/**
- * Parses a SerpApi Shopping result into a normalised ExternalOffer.
- */
-export function parseSerperResult(item: SerperShoppingItem): ExternalOffer | null {
-  // ── Price extraction ────────────────────────────────────────────────────────
+export function parseSerpApiResult(item: SerpApiShoppingItem): ExternalOffer | null {
   let price = item.extracted_price;
   if (!price) {
     const rawPrice = item.price || "";
-    // Strip currency symbols and commas, then parse
     const priceMatch = rawPrice.replace(/[^\d.,]/g, "").replace(/,/g, "");
     price = parseFloat(priceMatch);
   }
 
   if (!price || price < 10 || price > 500000) return null;
 
-  // ── Delivery ────────────────────────────────────────────────────────────────
   const deliveryText = (item.delivery || "").toLowerCase();
   let deliveryDays = 5;
 
@@ -85,7 +78,7 @@ export function parseSerperResult(item: SerperShoppingItem): ExternalOffer | nul
   } else if (deliveryText.includes("express")) {
     deliveryDays = 2;
   } else if (deliveryText.includes("gratis") || deliveryText.includes("free")) {
-    deliveryDays = 3; // usually standard with free shipping
+    deliveryDays = 3;
   }
 
   const freeShipping =
@@ -93,42 +86,35 @@ export function parseSerperResult(item: SerperShoppingItem): ExternalOffer | nul
     deliveryText.includes("free") ||
     deliveryText.includes("sin costo");
 
-  // ── Score (lower = better) ──────────────────────────────────────────────────
   const deliveryScore = deliveryDays * 10;
   const shippingScore = freeShipping ? 0 : 15;
-  const positionScore = item.position * 2; // Google position bonus
+  const positionScore = item.position * 2;
   const ratingPenalty = item.rating ? (5 - item.rating) * 10 : 15;
-
   const compositeScore = price / 1000 + deliveryScore + shippingScore + positionScore + ratingPenalty;
 
   return {
     id: `ext_serpapi_${Math.random().toString(36).substr(2, 9)}`,
-    title: anonymiseSerperTitle(item.title),
-    price, // We will apply the markup later
+    title: anonymiseSerpApiTitle(item.title),
+    price,
     currency: "MXN",
     deliveryDays,
     freeShipping,
     rating: item.rating,
     score: compositeScore,
     thumbnailUrl: item.thumbnail,
-    availability: "in_stock", // SerpApi Shopping only shows available items
+    availability: "in_stock",
     isExternal: true,
     raw: {
       source: item.source || "Proveedor Externo",
       originalPrice: price,
-      url: item.link,
-    }
+      url: item.product_link || item.link,
+    },
   };
 }
 
-/**
- * Removes retailer names from Shopping titles.
- */
-function anonymiseSerperTitle(title: string): string {
-  // Remove anything after a dash or pipe (usually the store name)
+function anonymiseSerpApiTitle(title: string): string {
   let clean = title.replace(/\s*[-–|]\s*[^-–|]+$/, "").trim();
 
-  // Remove known retailer names
   const retailers = [
     "Amazon",
     "Liverpool",
@@ -141,8 +127,8 @@ function anonymiseSerperTitle(title: string): string {
     "Falabella",
     "Palacio de Hierro",
   ];
-  for (const r of retailers) {
-    clean = clean.replace(new RegExp(`\\b${r}\\b`, "gi"), "").trim();
+  for (const retailer of retailers) {
+    clean = clean.replace(new RegExp(`\\b${retailer}\\b`, "gi"), "").trim();
   }
 
   return clean || title;
